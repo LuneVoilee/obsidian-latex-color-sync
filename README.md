@@ -12,6 +12,8 @@ It rewrites formulas to this format:
 
 Typical use case: when your heading/link/quote text has theme color, your math formula can follow the same color automatically.
 
+![Showcase](./img/showcase.png)
+
 ## Two Ways It Works
 
 ### 1) Auto Sync While Typing
