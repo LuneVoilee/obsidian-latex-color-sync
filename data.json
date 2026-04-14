@@ -1,0 +1,9 @@
+{
+  "language": "auto",
+  "autoSyncOnEnter": true,
+  "processPreviousLineOnEnter": true,
+  "preferDomColor": true,
+  "overwriteExistingColor": true,
+  "skipEmbeddedColorFormula": true,
+  "showNoticeAfterManualSync": true
+}
