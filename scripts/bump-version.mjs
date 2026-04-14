@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 
@@ -72,6 +73,22 @@ function writeJson(filePath, value, dryRun) {
 	writeText(filePath, output, dryRun);
 }
 
+function runGit(args, cwd, inherit = false) {
+	const result = spawnSync("git", args, {
+		cwd,
+		encoding: "utf8",
+		stdio: inherit ? "inherit" : "pipe"
+	});
+	if (result.error) {
+		fail(`Failed to run git ${args.join(" ")}: ${result.error.message}`);
+	}
+	if (result.status !== 0) {
+		const stderr = (result.stderr || "").trim();
+		fail(`git ${args.join(" ")} failed${stderr ? `: ${stderr}` : "."}`);
+	}
+	return String(result.stdout || "").trim();
+}
+
 function formatToday() {
 	const now = new Date();
 	const y = now.getFullYear();
@@ -123,6 +140,10 @@ Options:
   --set <x.y.z>          Set exact next version
   --bump <type>          Bump major/minor/patch
   --min-app <x.y.z>      Override manifest minAppVersion for the new version
+  --tag                  Create git tag after version sync
+  --push-tag             Push created tag to origin (implies --tag)
+  --tag-name <name>      Use explicit tag name (default: <tag-prefix><version>)
+  --tag-prefix <prefix>  Prefix used when composing tag name (default: v)
   --readme               Update README release tag examples (default: on)
   --no-readme            Skip README example updates
   --changelog            Insert new CHANGELOG section if missing (default: off)
@@ -136,6 +157,10 @@ function parseArgs(argv) {
 		setVersion: null,
 		bumpType: null,
 		minAppVersion: null,
+		createTag: false,
+		pushTag: false,
+		tagName: null,
+		tagPrefix: "v",
 		updateReadme: true,
 		updateChangelog: false,
 		dryRun: false
@@ -159,6 +184,25 @@ function parseArgs(argv) {
 		}
 		if (token === "--min-app") {
 			args.minAppVersion = argv[i + 1];
+			i += 1;
+			continue;
+		}
+		if (token === "--tag") {
+			args.createTag = true;
+			continue;
+		}
+		if (token === "--push-tag") {
+			args.pushTag = true;
+			args.createTag = true;
+			continue;
+		}
+		if (token === "--tag-name") {
+			args.tagName = argv[i + 1];
+			i += 1;
+			continue;
+		}
+		if (token === "--tag-prefix") {
+			args.tagPrefix = argv[i + 1] ?? "";
 			i += 1;
 			continue;
 		}
@@ -234,6 +278,9 @@ function main() {
 	if (args.setVersion && args.bumpType) {
 		fail("Use either --set or --bump, not both.");
 	}
+	if (args.tagName && args.tagPrefix !== "v") {
+		fail("Use either --tag-name or --tag-prefix, not both.");
+	}
 
 	let nextVersion = args.setVersion;
 	if (nextVersion) {
@@ -289,13 +336,40 @@ function main() {
 	writeText(filePaths.readmeZh, readmeZh, args.dryRun);
 	writeText(filePaths.changelog, changelog, args.dryRun);
 
+	let resolvedTagName = null;
+	if (args.createTag) {
+		runGit(["rev-parse", "--is-inside-work-tree"], cwd);
+		resolvedTagName = args.tagName ?? `${args.tagPrefix}${nextVersion}`;
+		if (!resolvedTagName || !String(resolvedTagName).trim()) {
+			fail("Resolved tag name is empty.");
+		}
+
+		const existingTag = runGit(["tag", "--list", resolvedTagName], cwd);
+		if (existingTag) {
+			fail(`Tag '${resolvedTagName}' already exists.`);
+		}
+
+		if (args.dryRun) {
+			info(`Would create tag: ${resolvedTagName}`);
+			if (args.pushTag) {
+				info(`Would push tag to origin: ${resolvedTagName}`);
+			}
+		} else {
+			runGit(["tag", resolvedTagName], cwd);
+			if (args.pushTag) {
+				runGit(["push", "origin", resolvedTagName], cwd, true);
+			}
+		}
+	}
+
 	info(`Current version: ${currentVersion}`);
 	info(`Next version:    ${nextVersion}`);
 	info(`minAppVersion:   ${minAppVersion}`);
 	info(`README update:   ${args.updateReadme ? "on" : "off"}`);
 	info(`CHANGELOG add:   ${args.updateChangelog ? "on" : "off"}`);
+	info(`Tag action:      ${args.createTag ? resolvedTagName : "off"}`);
+	info(`Push tag:        ${args.pushTag ? "on" : "off"}`);
 	info(args.dryRun ? "Dry run complete (no files written)." : "Version sync complete.");
 }
 
 main();
-
