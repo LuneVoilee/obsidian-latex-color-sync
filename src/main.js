@@ -6,8 +6,6 @@ const { syntaxTree } = require("@codemirror/language");
 const { resolveLocale, translate } = require("./i18n");
 const {
 	clamp,
-	findClosingDelimiter,
-	isEscaped,
 	isWhitespace,
 	nodeToElement,
 	normalizeColorToHex,
@@ -17,6 +15,8 @@ const {
 
 const SYNC_ANNOTATION = Annotation.define();
 const EXCLUDED_NODE_PATTERN = /(Code|FencedCode|CodeBlock|InlineCode|CodeText|FrontMatter|YAML|Html|HTML)/i;
+const MATH_NODE_PATTERN = /Math/i;
+const NON_CONTAINER_MATH_NODE_PATTERN = /(MathMark|MathText|MathEscape|MathDelimiter|MathOpen|MathClose)/i;
 const EMBEDDED_COLOR_PATTERN = /\\(?:textcolor|color)\s*\{/;
 
 const DEFAULT_SETTINGS = {
@@ -324,57 +324,86 @@ module.exports = class LatexColorSyncPlugin extends Plugin {
 
 	findMathSpansInLine(state, line) {
 		const spans = [];
-		const text = line.text;
-		let i = 0;
+		const tree = syntaxTree(state);
+		tree.iterate({
+			from: line.from,
+			to: line.to,
+			enter: (node) => {
+				const nodeName = node.type.name || "";
+				if (!MATH_NODE_PATTERN.test(nodeName) || NON_CONTAINER_MATH_NODE_PATTERN.test(nodeName)) {
+					return;
+				}
+				if (node.from < line.from || node.to > line.to) {
+					return;
+				}
 
-		while (i < text.length) {
-			if (text[i] !== "$" || isEscaped(text, i)) {
-				i += 1;
-				continue;
+				const raw = state.doc.sliceString(node.from, node.to);
+				const delimiter = this.detectMathDelimiter(raw);
+				if (!delimiter) {
+					return;
+				}
+
+				const delimiterLength = delimiter.length;
+				const startOffset = node.from - line.from;
+				const endOffset = node.to - line.from;
+				const contentStartOffset = startOffset + delimiterLength;
+				const contentEndOffset = endOffset - delimiterLength;
+				if (contentEndOffset <= contentStartOffset) {
+					return;
+				}
+
+				spans.push({
+					startOffset,
+					endOffset,
+					contentStartOffset,
+					contentEndOffset,
+					delimiter
+				});
 			}
+		});
 
-			const delimiterLength = text[i + 1] === "$" ? 2 : 1;
-			if (delimiterLength === 1 && this.looksLikeCurrency(text, i)) {
-				i += 1;
-				continue;
-			}
-
-			const startPos = line.from + i;
-			if (this.hasExcludedAncestor(state, startPos)) {
-				i += delimiterLength;
-				continue;
-			}
-
-			const close = findClosingDelimiter(text, i, delimiterLength);
-			if (!close) {
-				i += delimiterLength;
-				continue;
-			}
-
-			const contentStart = i + delimiterLength;
-			const contentEnd = close.start;
-			if (contentEnd <= contentStart) {
-				i = close.end;
-				continue;
-			}
-
-			spans.push({
-				startOffset: i,
-				endOffset: close.end,
-				contentStartOffset: contentStart,
-				contentEndOffset: contentEnd,
-				delimiter: delimiterLength === 2 ? "$$" : "$"
-			});
-			i = close.end;
-		}
-
-		return spans;
+		return this.deduplicateMathSpans(spans);
 	}
 
-	looksLikeCurrency(text, index) {
-		const prev = index > 0 ? text[index - 1] : "";
-		const next = index + 1 < text.length ? text[index + 1] : "";
-		return /\d/.test(next) && (prev === "" || /\s/.test(prev));
+	detectMathDelimiter(raw) {
+		if (!raw || raw.length < 3) {
+			return null;
+		}
+		if (raw.startsWith("$$") && raw.endsWith("$$") && raw.length > 4) {
+			return "$$";
+		}
+		if (!raw.startsWith("$$") && !raw.endsWith("$$") && raw.startsWith("$") && raw.endsWith("$") && raw.length > 2) {
+			return "$";
+		}
+		return null;
+	}
+
+	deduplicateMathSpans(spans) {
+		if (spans.length <= 1) {
+			return spans;
+		}
+
+		const unique = [];
+		const seen = new Set();
+		const sorted = spans.slice().sort((a, b) => a.startOffset - b.startOffset || a.endOffset - b.endOffset);
+		for (const span of sorted) {
+			const key = `${span.startOffset}:${span.endOffset}`;
+			if (seen.has(key)) {
+				continue;
+			}
+			const last = unique.length > 0 ? unique[unique.length - 1] : null;
+			if (last && span.startOffset < last.endOffset) {
+				if (span.endOffset <= last.endOffset) {
+					continue;
+				}
+				unique[unique.length - 1] = span;
+				seen.add(key);
+				continue;
+			}
+			seen.add(key);
+			unique.push(span);
+		}
+		return unique;
 	}
 
 	resolveTargetColor(view, state, line, span) {

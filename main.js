@@ -140,12 +140,12 @@ var require_i18n = __commonJS({
 // src/latex-utils.js
 var require_latex_utils = __commonJS({
   "src/latex-utils.js"(exports2, module2) {
-    function findClosingDelimiter2(text, openingIndex, delimiterLength) {
+    function findClosingDelimiter(text, openingIndex, delimiterLength) {
       let i = openingIndex + delimiterLength;
       while (i < text.length) {
-        if (text[i] === "$" && !isEscaped2(text, i)) {
+        if (text[i] === "$" && !isEscaped(text, i)) {
           if (delimiterLength === 2) {
-            if (text[i + 1] === "$" && !isEscaped2(text, i + 1)) {
+            if (text[i + 1] === "$" && !isEscaped(text, i + 1)) {
               return { start: i, end: i + 2 };
             }
           } else if (text[i + 1] !== "$") {
@@ -340,7 +340,7 @@ var require_latex_utils = __commonJS({
     function normalizeLatexColorToken2(value) {
       return (value || "").replace(/\s+/g, "").toLowerCase();
     }
-    function isEscaped2(text, index) {
+    function isEscaped(text, index) {
       let backslashCount = 0;
       for (let i = index - 1; i >= 0; i -= 1) {
         if (text[i] !== "\\") {
@@ -367,8 +367,8 @@ var require_latex_utils = __commonJS({
     }
     module2.exports = {
       clamp: clamp2,
-      findClosingDelimiter: findClosingDelimiter2,
-      isEscaped: isEscaped2,
+      findClosingDelimiter,
+      isEscaped,
       isWhitespace: isWhitespace2,
       nodeToElement: nodeToElement2,
       normalizeColorToHex: normalizeColorToHex2,
@@ -386,8 +386,6 @@ var { syntaxTree } = require("@codemirror/language");
 var { resolveLocale, translate } = require_i18n();
 var {
   clamp,
-  findClosingDelimiter,
-  isEscaped,
   isWhitespace,
   nodeToElement,
   normalizeColorToHex,
@@ -396,6 +394,8 @@ var {
 } = require_latex_utils();
 var SYNC_ANNOTATION = Annotation.define();
 var EXCLUDED_NODE_PATTERN = /(Code|FencedCode|CodeBlock|InlineCode|CodeText|FrontMatter|YAML|Html|HTML)/i;
+var MATH_NODE_PATTERN = /Math/i;
+var NON_CONTAINER_MATH_NODE_PATTERN = /(MathMark|MathText|MathEscape|MathDelimiter|MathOpen|MathClose)/i;
 var EMBEDDED_COLOR_PATTERN = /\\(?:textcolor|color)\s*\{/;
 var DEFAULT_SETTINGS = {
   language: "auto",
@@ -658,49 +658,79 @@ module.exports = class LatexColorSyncPlugin extends Plugin {
   }
   findMathSpansInLine(state, line) {
     const spans = [];
-    const text = line.text;
-    let i = 0;
-    while (i < text.length) {
-      if (text[i] !== "$" || isEscaped(text, i)) {
-        i += 1;
-        continue;
+    const tree = syntaxTree(state);
+    tree.iterate({
+      from: line.from,
+      to: line.to,
+      enter: (node) => {
+        const nodeName = node.type.name || "";
+        if (!MATH_NODE_PATTERN.test(nodeName) || NON_CONTAINER_MATH_NODE_PATTERN.test(nodeName)) {
+          return;
+        }
+        if (node.from < line.from || node.to > line.to) {
+          return;
+        }
+        const raw = state.doc.sliceString(node.from, node.to);
+        const delimiter = this.detectMathDelimiter(raw);
+        if (!delimiter) {
+          return;
+        }
+        const delimiterLength = delimiter.length;
+        const startOffset = node.from - line.from;
+        const endOffset = node.to - line.from;
+        const contentStartOffset = startOffset + delimiterLength;
+        const contentEndOffset = endOffset - delimiterLength;
+        if (contentEndOffset <= contentStartOffset) {
+          return;
+        }
+        spans.push({
+          startOffset,
+          endOffset,
+          contentStartOffset,
+          contentEndOffset,
+          delimiter
+        });
       }
-      const delimiterLength = text[i + 1] === "$" ? 2 : 1;
-      if (delimiterLength === 1 && this.looksLikeCurrency(text, i)) {
-        i += 1;
-        continue;
-      }
-      const startPos = line.from + i;
-      if (this.hasExcludedAncestor(state, startPos)) {
-        i += delimiterLength;
-        continue;
-      }
-      const close = findClosingDelimiter(text, i, delimiterLength);
-      if (!close) {
-        i += delimiterLength;
-        continue;
-      }
-      const contentStart = i + delimiterLength;
-      const contentEnd = close.start;
-      if (contentEnd <= contentStart) {
-        i = close.end;
-        continue;
-      }
-      spans.push({
-        startOffset: i,
-        endOffset: close.end,
-        contentStartOffset: contentStart,
-        contentEndOffset: contentEnd,
-        delimiter: delimiterLength === 2 ? "$$" : "$"
-      });
-      i = close.end;
-    }
-    return spans;
+    });
+    return this.deduplicateMathSpans(spans);
   }
-  looksLikeCurrency(text, index) {
-    const prev = index > 0 ? text[index - 1] : "";
-    const next = index + 1 < text.length ? text[index + 1] : "";
-    return /\d/.test(next) && (prev === "" || /\s/.test(prev));
+  detectMathDelimiter(raw) {
+    if (!raw || raw.length < 3) {
+      return null;
+    }
+    if (raw.startsWith("$$") && raw.endsWith("$$") && raw.length > 4) {
+      return "$$";
+    }
+    if (!raw.startsWith("$$") && !raw.endsWith("$$") && raw.startsWith("$") && raw.endsWith("$") && raw.length > 2) {
+      return "$";
+    }
+    return null;
+  }
+  deduplicateMathSpans(spans) {
+    if (spans.length <= 1) {
+      return spans;
+    }
+    const unique = [];
+    const seen = /* @__PURE__ */ new Set();
+    const sorted = spans.slice().sort((a, b) => a.startOffset - b.startOffset || a.endOffset - b.endOffset);
+    for (const span of sorted) {
+      const key = `${span.startOffset}:${span.endOffset}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      const last = unique.length > 0 ? unique[unique.length - 1] : null;
+      if (last && span.startOffset < last.endOffset) {
+        if (span.endOffset <= last.endOffset) {
+          continue;
+        }
+        unique[unique.length - 1] = span;
+        seen.add(key);
+        continue;
+      }
+      seen.add(key);
+      unique.push(span);
+    }
+    return unique;
   }
   resolveTargetColor(view, state, line, span) {
     const strategies = this.settings.preferDomColor ? ["dom", "syntax"] : ["syntax", "dom"];
