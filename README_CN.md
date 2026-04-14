@@ -97,7 +97,7 @@ npm run dev
 
 仓库已包含 `.github/workflows/release.yml`：
 
-- 触发方式：推送 Tag（如 `v0.3.1` 或 `0.3.1`）
+- 触发方式：推送 Tag（如 `v0.3.2` 或 `0.3.2`）
 - 执行动作：安装依赖、构建 `main.js`、上传 Release 资源
 - 上传文件：`main.js`、`manifest.json`、`styles.css`
 

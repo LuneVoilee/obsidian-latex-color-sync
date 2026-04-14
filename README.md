@@ -99,7 +99,7 @@ Build result:
 
 This repository includes `.github/workflows/release.yml`:
 
-- Trigger: push a tag like `v0.3.1` (or `0.3.1`)
+- Trigger: push a tag like `v0.3.2` (or `0.3.2`)
 - Action: install dependencies, build `main.js`, upload release assets
 - Uploaded files: `main.js`, `manifest.json`, `styles.css`
 
