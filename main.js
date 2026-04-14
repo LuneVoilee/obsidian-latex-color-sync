@@ -394,8 +394,8 @@ var {
 } = require_latex_utils();
 var SYNC_ANNOTATION = Annotation.define();
 var EXCLUDED_NODE_PATTERN = /(Code|FencedCode|CodeBlock|InlineCode|CodeText|FrontMatter|YAML|Html|HTML)/i;
-var MATH_NODE_PATTERN = /Math/i;
-var NON_CONTAINER_MATH_NODE_PATTERN = /(MathMark|MathText|MathEscape|MathDelimiter|MathOpen|MathClose)/i;
+var MATH_BEGIN_MARK_PATTERN = /formatting-math-begin/i;
+var MATH_END_MARK_PATTERN = /formatting-math-end/i;
 var EMBEDDED_COLOR_PATTERN = /\\(?:textcolor|color)\s*\{/;
 var DEFAULT_SETTINGS = {
   language: "auto",
@@ -657,54 +657,68 @@ module.exports = class LatexColorSyncPlugin extends Plugin {
     return false;
   }
   findMathSpansInLine(state, line) {
-    const spans = [];
+    const markers = [];
     const tree = syntaxTree(state);
     tree.iterate({
       from: line.from,
       to: line.to,
       enter: (node) => {
-        const nodeName = node.type.name || "";
-        if (!MATH_NODE_PATTERN.test(nodeName) || NON_CONTAINER_MATH_NODE_PATTERN.test(nodeName)) {
-          return;
-        }
         if (node.from < line.from || node.to > line.to) {
           return;
         }
-        const raw = state.doc.sliceString(node.from, node.to);
-        const delimiter = this.detectMathDelimiter(raw);
-        if (!delimiter) {
+        const nodeName = node.type.name || node.name || "";
+        const isBegin = MATH_BEGIN_MARK_PATTERN.test(nodeName);
+        const isEnd = MATH_END_MARK_PATTERN.test(nodeName);
+        if (!isBegin && !isEnd) {
           return;
         }
-        const delimiterLength = delimiter.length;
-        const startOffset = node.from - line.from;
-        const endOffset = node.to - line.from;
-        const contentStartOffset = startOffset + delimiterLength;
-        const contentEndOffset = endOffset - delimiterLength;
-        if (contentEndOffset <= contentStartOffset) {
+        const raw = state.doc.sliceString(node.from, node.to);
+        if (raw !== "$" && raw !== "$$") {
           return;
+        }
+        markers.push({
+          kind: isBegin ? "begin" : "end",
+          from: node.from,
+          to: node.to,
+          delimiter: raw
+        });
+      }
+    });
+    if (markers.length < 2) {
+      return [];
+    }
+    markers.sort((a, b) => a.from - b.from || a.to - b.to);
+    const spans = [];
+    const stack = [];
+    for (const marker of markers) {
+      if (marker.kind === "begin") {
+        stack.push(marker);
+        continue;
+      }
+      for (let i = stack.length - 1; i >= 0; i -= 1) {
+        const open = stack[i];
+        if (open.delimiter !== marker.delimiter) {
+          continue;
+        }
+        stack.splice(i, 1);
+        const startOffset = open.from - line.from;
+        const endOffset = marker.to - line.from;
+        const contentStartOffset = open.to - line.from;
+        const contentEndOffset = marker.from - line.from;
+        if (contentEndOffset <= contentStartOffset) {
+          break;
         }
         spans.push({
           startOffset,
           endOffset,
           contentStartOffset,
           contentEndOffset,
-          delimiter
+          delimiter: open.delimiter
         });
+        break;
       }
-    });
+    }
     return this.deduplicateMathSpans(spans);
-  }
-  detectMathDelimiter(raw) {
-    if (!raw || raw.length < 3) {
-      return null;
-    }
-    if (raw.startsWith("$$") && raw.endsWith("$$") && raw.length > 4) {
-      return "$$";
-    }
-    if (!raw.startsWith("$$") && !raw.endsWith("$$") && raw.startsWith("$") && raw.endsWith("$") && raw.length > 2) {
-      return "$";
-    }
-    return null;
   }
   deduplicateMathSpans(spans) {
     if (spans.length <= 1) {
