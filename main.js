@@ -610,6 +610,7 @@ module.exports = class LatexColorSyncPlugin extends Plugin {
     if (mathSpans.length === 0) {
       return { text: line.text, scannedFormulas: 0, changedFormulas: 0 };
     }
+    const defaultTextColor = this.resolveDefaultTextColor(view);
     let out = "";
     let cursor = 0;
     let changed = false;
@@ -620,6 +621,11 @@ module.exports = class LatexColorSyncPlugin extends Plugin {
       const content = line.text.slice(span.contentStartOffset, span.contentEndOffset);
       const color = this.resolveTargetColor(view, state, line, span);
       if (!color) {
+        out += original;
+        cursor = span.endOffset;
+        continue;
+      }
+      if (this.isSameColorToken(color, defaultTextColor)) {
         out += original;
         cursor = span.endOffset;
         continue;
@@ -928,6 +934,26 @@ module.exports = class LatexColorSyncPlugin extends Plugin {
       return null;
     }
     return normalizeColorToHex(trimmed, anchorElement);
+  }
+  resolveDefaultTextColor(view) {
+    if (!view || !view.dom) {
+      return this.resolveCssVariableColor("--text-normal", null);
+    }
+    const fromCssVariable = this.resolveCssVariableColor("--text-normal", view.dom);
+    if (fromCssVariable) {
+      return fromCssVariable;
+    }
+    const fromEditor = this.getComputedElementColor(view.dom);
+    if (fromEditor) {
+      return fromEditor;
+    }
+    return this.getComputedElementColor(document.body);
+  }
+  isSameColorToken(a, b) {
+    if (!a || !b) {
+      return false;
+    }
+    return normalizeLatexColorToken(a) === normalizeLatexColorToken(b);
   }
   rewriteMathContent(content, targetColorHex) {
     const wrapper = parseTopLevelColorWrapper(content);
